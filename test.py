@@ -32,6 +32,7 @@ ROOT_USE_RELATIVE = True
 ROOT_LOCK_XZ = False
 ROOT_SWAP_XZ = False
 ROOT_ROT_SWAP_YZ = True
+GLOBAL_POS_FOCUS = "root"  # "root" | "foot_center"
 
 BODY_ROT_OFFSET = {
     "x": 0.0,
@@ -48,7 +49,7 @@ ROOT_POS_SIGN = {
 ROOT_POS_SCALE = {
     "x": 12.0,
     "y": 12.0,
-    "z": 10.0,
+    "z": 12.0,
 }
 
 ROOT_POS_OFFSET = {
@@ -203,11 +204,16 @@ def to_local(v_world, right, up, forward):
         np.dot(v_world, forward),
     ], dtype=np.float32)
 
-def compute_root_position(curr_root, start_root):
+def get_global_focus_position(curr_xyz):
+    if GLOBAL_POS_FOCUS == "foot_center":
+        return 0.5 * (curr_xyz[L_ANKLE] + curr_xyz[R_ANKLE])
+    return curr_xyz[ROOT]
+
+def compute_root_position(curr_focus, start_focus):
     if ROOT_USE_RELATIVE:
-        p = curr_root - start_root
+        p = curr_focus - start_focus
     else:
-        p = curr_root.copy()
+        p = curr_focus.copy()
 
     px = float(p[0])
     py = float(p[2])   # HumanML3D Z → Mine-imator Y (수평)
@@ -335,7 +341,7 @@ def convert_motion_to_miframes(npy_path, output_path):
     yaw_deg = torch.rad2deg(yaw_rad).squeeze(0).cpu().numpy()  # (T,)
 
     T = xyz.shape[0]
-    start_pos = xyz[0, ROOT].copy()
+    start_pos = get_global_focus_position(xyz[0]).copy()
 
     miframes = {
         "format": 34,
@@ -370,7 +376,8 @@ def convert_motion_to_miframes(npy_path, output_path):
         curr_xyz = xyz[t]
 
         # root
-        pos_x, pos_y, pos_z = compute_root_position(curr_xyz[ROOT], start_pos)
+        curr_focus = get_global_focus_position(curr_xyz)
+        pos_x, pos_y, pos_z = compute_root_position(curr_focus, start_pos)
 
         global_yaw = wrap_deg(float(yaw_deg[t]) * YAW_SIGN * YAW_SCALE + YAW_OFFSET)
 
