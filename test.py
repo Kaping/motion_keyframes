@@ -46,9 +46,9 @@ ROOT_POS_SIGN = {
 }
 
 ROOT_POS_SCALE = {
-    "x": 14.0,
-    "y": 14.0,
-    "z": 20.0,
+    "x": 12.0,
+    "y": 12.0,
+    "z": 10.0,
 }
 
 ROOT_POS_OFFSET = {
@@ -66,7 +66,7 @@ YAW_OFFSET = 0.0
 # Pitch: spine 앞뒤 기울기 → Mine-imator root ROT_X
 PITCH_SIGN = 1.0
 PITCH_SCALE = 1.0
-PITCH_OFFSET = 0.0
+PITCH_OFFSET = -8.0
 
 # Roll: spine 좌우 기울기 → Mine-imator root ROT_Z
 ROLL_SIGN = 1.0
@@ -91,11 +91,11 @@ PART_X_SCALE = {
 }
 
 PART_X_OFFSET = {
-    "head": 60.0,
-    "left_arm": -45.0,
-    "right_arm": -45.0,
-    "left_leg": -90.0,
-    "right_leg": -90.0,
+    "head": 150.0,
+    "left_arm": -10.0,
+    "right_arm": -10.0,
+    "left_leg": 0.0,
+    "right_leg": 0.0,
 }
 
 PART_Y_SIGN = {
@@ -125,8 +125,8 @@ PART_Y_OFFSET = {
 # ROT_Z (비틀림) 보정
 PART_Z_SIGN = {
     "head": 0.0,        # head는 end 없음 → twist 계산 안 함
-    "left_arm": 1.0,
-    "right_arm": 1.0,
+    "left_arm": -1.0,
+    "right_arm": -1.0,
     "left_leg": 1.0,
     "right_leg": 1.0,
 }
@@ -147,6 +147,10 @@ PART_Z_SCALE = {
     "right_leg": 0.1,
 }
 
+# 팔 비틀림(ROT_Z) 안정화
+TWIST_STABILIZE_PARTS = {"left_arm", "right_arm"}
+TWIST_EMA_ALPHA = 0.25
+
 
 # --- [2. 유틸리티] ---
 def normalize(v):
@@ -154,6 +158,10 @@ def normalize(v):
 
 def wrap_deg(angle):
     return (angle + 180.0) % 360.0 - 180.0
+
+def unwrap_from_prev(curr_wrapped, prev_unwrapped):
+    delta = wrap_deg(curr_wrapped - prev_unwrapped)
+    return prev_unwrapped + delta
 
 def to_jsonable(obj):
     """NumPy 스칼라/배열을 표준 JSON 직렬화 가능한 타입으로 변환."""
@@ -234,8 +242,10 @@ def compute_rot_from_local(local_v):
     """
     lx, ly, lz = local_v
 
-    rot_x = np.degrees(np.arctan2(-ly, np.sqrt(lx * lx + lz * lz) + 1e-8))
-    rot_y = np.degrees(np.arctan2(lx, abs(lz) + 1e-8))
+    # 기준축을 -Y로 두고 전후/좌우 스윙을 분리해 읽는다.
+    # (0, -1, 0)인 차렷 자세에서 ROT_X=ROT_Y=0을 만족한다.
+    rot_x = np.degrees(np.arctan2(lz, -ly + 1e-8))  # 앞뒤
+    rot_y = np.degrees(np.arctan2(lx, -ly + 1e-8))  # 좌우
 
     return wrap_deg(rot_x), wrap_deg(rot_y)
 
@@ -277,7 +287,7 @@ def compute_twist(arm_dir_local, end_vec_world, right, up, forward):
     actual_perp = end_local - np.dot(end_local, arm_n) * arm_n
     actual_norm = np.linalg.norm(actual_perp)
     if actual_norm < 1e-6:
-        return 0.0
+        return None
     actual_perp /= actual_norm
 
     # 기준: body forward (local [0,0,1]) ⊥ arm_dir
@@ -290,7 +300,7 @@ def compute_twist(arm_dir_local, end_vec_world, right, up, forward):
         ref = ref - np.dot(ref, arm_n) * arm_n
         ref_norm = np.linalg.norm(ref)
         if ref_norm < 1e-6:
-            return 0.0
+            return None
     ref /= ref_norm
 
     cos_t = np.clip(np.dot(ref, actual_perp), -1.0, 1.0)
@@ -306,7 +316,8 @@ def apply_part_adjustment(name, rot_x, rot_y, rot_z):
         rot_y * PART_Y_SIGN.get(name, 1.0) * PART_Y_SCALE.get(name, 1.0)
         + PART_Y_OFFSET.get(name, 0.0)
     )
-    rot_z = wrap_deg(rot_z * PART_Z_SIGN.get(name, 0.0) * PART_Z_SCALE.get(name, 1.0) + PART_Z_OFFSET.get(name, 0.0))
+    # ROT_Z는 연속각(unwrapped)을 유지해 프레임 경계에서 ±180 점프를 줄인다.
+    rot_z = rot_z * PART_Z_SIGN.get(name, 0.0) * PART_Z_SCALE.get(name, 1.0) + PART_Z_OFFSET.get(name, 0.0)
     return rot_x, rot_y, rot_z
 
 
@@ -351,6 +362,9 @@ def convert_motion_to_miframes(npy_path, output_path):
         }
         for name in parts.keys()
     }
+    twist_prev_unwrapped = {name: 0.0 for name in TWIST_STABILIZE_PARTS}
+    twist_prev_output = {name: 0.0 for name in TWIST_STABILIZE_PARTS}
+    twist_has_prev = {name: False for name in TWIST_STABILIZE_PARTS}
 
     for t in range(T):
         curr_xyz = xyz[t]
@@ -394,11 +408,32 @@ def convert_motion_to_miframes(npy_path, output_path):
             # ROT_Z: end가 있는 부위만 twist 계산
             if "end" in idx and PART_Z_SIGN.get(name, 0.0) != 0.0:
                 end_vec = curr_xyz[idx["end"]] - curr_xyz[idx["p"]]
-                rot_z = compute_twist(v_local, end_vec, body_right, body_up, body_forward)
+                twist_raw = compute_twist(v_local, end_vec, body_right, body_up, body_forward)
+                if name in TWIST_STABILIZE_PARTS:
+                    if twist_raw is None:
+                        rot_z = twist_prev_output[name] if twist_has_prev[name] else 0.0
+                    else:
+                        if twist_has_prev[name]:
+                            twist_unwrapped = unwrap_from_prev(twist_raw, twist_prev_unwrapped[name])
+                            twist_smoothed = (
+                                TWIST_EMA_ALPHA * twist_unwrapped
+                                + (1.0 - TWIST_EMA_ALPHA) * twist_prev_unwrapped[name]
+                            )
+                        else:
+                            twist_smoothed = float(twist_raw)
+                        twist_prev_unwrapped[name] = twist_smoothed
+                        twist_prev_output[name] = twist_smoothed
+                        twist_has_prev[name] = True
+                        rot_z = twist_smoothed
+                else:
+                    rot_z = 0.0 if twist_raw is None else float(twist_raw)
             else:
                 rot_z = 0.0
 
             rot_x, rot_y, rot_z = apply_part_adjustment(name, rot_x, rot_y, rot_z)
+            if name == "head":
+                # 헤드 Y축은 리그 반응이 불안정해 0으로 고정한다.
+                rot_y = 0.0
 
             vals = {
                 "ROT_X": round(rot_x, 5),

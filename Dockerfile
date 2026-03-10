@@ -30,6 +30,7 @@ RUN pip install --no-cache-dir --upgrade cmake \
     && sed -i '/bpy/d' requirements.txt \
     && pip install --no-cache-dir -r requirements.txt \
     && pip install --no-cache-dir -r prepare/requirements_render.txt \
+    && pip install --no-cache-dir --force-reinstall torch==2.0.0+cu118 torchvision==0.15.1+cu118 --index-url https://download.pytorch.org/whl/cu118 \
     && pip install --no-cache-dir librosa soundfile gdown "gradio==3.50.2" spacy \
     && python -m spacy download en_core_web_sm
 
@@ -43,6 +44,8 @@ RUN sed -i 's/server_name="localhost", server_port=8888/server_name="0.0.0.0", s
 ENTRYPOINT ["/bin/bash", "-c", "\
     find prepare/ -name '*.sh' -exec perl -pi -e 's/\\r$//' {} + && \
     bash prepare/download_t2m_evaluators.sh && \
+    mkdir -p deps/t2m/t2m && \
+    mv deps/t2m/t2m/t2m/* deps/t2m/t2m/ 2>/dev/null || true && \
     bash prepare/download_motiongpt_pretrained_models.sh && \
     mkdir -p checkpoints && \
     (ls checkpoints/motiongpt3.ckpt || gdown --id '1Wvx5PGJjVKPRvjcl8firChw1UVjUj36l' -O checkpoints/motiongpt3.ckpt) && \
