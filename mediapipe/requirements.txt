@@ -1,0 +1,6 @@
+mediapipe==0.10.14
+opencv-python-headless==4.10.0.84
+gradio==4.42.0
+numpy==1.26.4
+huggingface_hub==0.25.2
+pydantic==2.10.6

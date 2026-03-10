@@ -1,0 +1,9 @@
+*.mp4
+*.npy
+*.miframes
+*.json
+
+.claude/
+__pycache__/
+__pycache__/*
+*.pyc
