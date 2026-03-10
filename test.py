@@ -1,13 +1,16 @@
 import numpy as np
 import torch
 import json
-from motion_process import recover_from_ric
+from motion_process import recover_from_ric, recover_root_rot_pos
 
 # --- [1. 설정 및 상수] ---
 # NPY_FILE = "2026-03-09-07_09_0742399.npy" #달리기
-NPY_FILE = "2026-03-09-07_09_4951239.npy"  # 조ㅓㅁ퓨ㅡ
-# NPY_FILE = "2026-03-09-07_08_2592584.npy"  #  검
-OUTPUT_FILE = "점푸.miframes"
+# NPY_FILE = "2026-03-09-07_09_4951239.npy"  # 점프
+# NPY_FILE = "2026-03-09-07_08_2592584.npy"  # 검
+# NPY_FILE = "2026-03-10-11_58_0350684.npy"  # 개쩌는 옆돌기
+# NPY_FILE = "2026-03-10-11_58_5318060.npy"  # 주먹
+NPY_FILE = "2026-03-10-11_53_3170620.npy"  # 손인사
+OUTPUT_FILE = "손인사.miframes"
 
 # HumanML3D 22-joint indices
 ROOT = 0
@@ -23,15 +26,15 @@ L_WRIST, R_WRIST = 20, 21
 # 보정 파라미터
 MOVE_MULT = 0.0
 Y_OFFSET = 12.0
-BODY_PITCH_FIX = 0.0
 
 # --- Root(스티브 자체) 포지션 보정 ---
 ROOT_USE_RELATIVE = True
 ROOT_LOCK_XZ = False
 ROOT_SWAP_XZ = False
+ROOT_ROT_SWAP_YZ = True
 
 BODY_ROT_OFFSET = {
-    "x": 00.0,
+    "x": 0.0,
     "y": 0.0,
     "z": 0.0,
 }
@@ -43,8 +46,8 @@ ROOT_POS_SIGN = {
 }
 
 ROOT_POS_SCALE = {
-    "x": 16.0,
-    "y": 16.0,
+    "x": 14.0,
+    "y": 14.0,
     "z": 20.0,
 }
 
@@ -54,46 +57,96 @@ ROOT_POS_OFFSET = {
     "z": 0.0,
 }
 
+# --- Global Body 회전 보정 ---
+# Yaw: HumanML3D Y축 누적 회전 → Mine-imator root ROT_Y
+YAW_SIGN = -1.0
+YAW_SCALE = 2.0
+YAW_OFFSET = 0.0
+
+# Pitch: spine 앞뒤 기울기 → Mine-imator root ROT_X
+PITCH_SIGN = 1.0
+PITCH_SCALE = 1.0
+PITCH_OFFSET = 0.0
+
+# Roll: spine 좌우 기울기 → Mine-imator root ROT_Z
+ROLL_SIGN = 1.0
+ROLL_SCALE = 1.0
+ROLL_OFFSET = 0.0
+
 # 파트별 보정값
 PART_X_SIGN = {
     "head": 1.0,
-    "left_arm": -1.0,
-    "right_arm": -1.0,
+    "left_arm": 1.0,
+    "right_arm": 1.0,
+    "left_leg": 1.0,
+    "right_leg": 1.0,
+}
+
+PART_X_SCALE = {
+    "head": 1.0,
+    "left_arm": 1.0,
+    "right_arm": 1.0,
     "left_leg": 1.0,
     "right_leg": 1.0,
 }
 
 PART_X_OFFSET = {
-    "head": 80.0,
-    "left_arm": 80.0,
-    "right_arm": 80.0,
-    "left_leg": -70.0,
-    "right_leg": -70.0,
+    "head": 60.0,
+    "left_arm": -45.0,
+    "right_arm": -45.0,
+    "left_leg": -90.0,
+    "right_leg": -90.0,
 }
 
 PART_Y_SIGN = {
     "head": 1.0,
     "left_arm": -1.0,
     "right_arm": -1.0,
-    "left_leg": 1.0,
-    "right_leg": 1.0,
+    "left_leg": -1.0,
+    "right_leg": -1.0,
 }
 
 PART_Y_SCALE = {
     "head": 0.2,
-    "left_arm": 0.22,
-    "right_arm": 0.22,
-    "left_leg": 0.16,
-    "right_leg": 0.16,
+    "left_arm": 0.5,
+    "right_arm": 0.5,
+    "left_leg": 0.2,
+    "right_leg": 0.2,
 }
 
 PART_Y_OFFSET = {
     "head": 0.0,
     "left_arm": 0.0,
     "right_arm": 0.0,
-    "left_leg": 10.0,
-    "right_leg": -10.0,
+    "left_leg": 0.0,
+    "right_leg": 0.0,
 }
+
+# ROT_Z (비틀림) 보정
+PART_Z_SIGN = {
+    "head": 0.0,        # head는 end 없음 → twist 계산 안 함
+    "left_arm": 1.0,
+    "right_arm": 1.0,
+    "left_leg": 1.0,
+    "right_leg": 1.0,
+}
+
+PART_Z_OFFSET = {
+    "head": 0.0,
+    "left_arm": 0.0,
+    "right_arm": 0.0,
+    "left_leg": 0.0,
+    "right_leg": 0.0,
+}
+
+PART_Z_SCALE = {
+    "head": 1.0,
+    "left_arm": 0.1,
+    "right_arm": 0.1,
+    "left_leg": 0.1,
+    "right_leg": 0.1,
+}
+
 
 # --- [2. 유틸리티] ---
 def normalize(v):
@@ -101,6 +154,14 @@ def normalize(v):
 
 def wrap_deg(angle):
     return (angle + 180.0) % 360.0 - 180.0
+
+def to_jsonable(obj):
+    """NumPy 스칼라/배열을 표준 JSON 직렬화 가능한 타입으로 변환."""
+    if isinstance(obj, np.generic):
+        return obj.item()
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 def get_bend_angle(v1, v2):
     v1_u = normalize(v1)
@@ -111,9 +172,9 @@ def get_bend_angle(v1, v2):
 def build_body_frame(curr_xyz):
     """
     몸통 기준 local frame 생성
-    right: 왼엉덩이 -> 오른엉덩이
-    up: 힙 중심 -> 목
-    forward: right x up
+    right:   L_HIP → R_HIP
+    up:      hip center → NECK
+    forward: right × up
     """
     hip_center = 0.5 * (curr_xyz[L_HIP] + curr_xyz[R_HIP])
 
@@ -127,33 +188,22 @@ def build_body_frame(curr_xyz):
     return right, up, forward
 
 def to_local(v_world, right, up, forward):
-    """
-    world 벡터를 body local 성분으로 변환
-    local_x: body right
-    local_y: body up
-    local_z: body forward
-    """
+    """world 벡터 → body local 성분 (local_x=right, local_y=up, local_z=forward)"""
     return np.array([
         np.dot(v_world, right),
         np.dot(v_world, up),
         np.dot(v_world, forward),
     ], dtype=np.float32)
+
 def compute_root_position(curr_root, start_root):
-    """
-    Steve 자체 위치 계산
-    - 첫 프레임 기준 상대 이동 사용 가능
-    - X/Z 고정 가능
-    - 축 스왑 가능
-    - 축별 sign / scale / offset 적용
-    """
     if ROOT_USE_RELATIVE:
         p = curr_root - start_root
     else:
         p = curr_root.copy()
 
     px = float(p[0])
-    py = float(p[2])   # Z -> Y
-    pz = float(p[1])   # Y -> Z
+    py = float(p[2])   # HumanML3D Z → Mine-imator Y (수평)
+    pz = float(p[1])   # HumanML3D Y → Mine-imator Z (높이)
 
     if ROOT_SWAP_XZ:
         px, pz = pz, px
@@ -178,33 +228,85 @@ def compute_root_position(curr_root, start_root):
 
 def compute_rot_from_local(local_v):
     """
-    Mine-imator 기준 가정:
-    X = 앞뒤
-    Y = 좌우
-    Z = 비틀림(일단 0)
+    body-local 방향 벡터 → Mine-imator 회전각
+    차렷(-Y 방향) 기준: ROT_X=0, ROT_Y=0
+    ROT_X: 앞뒤  ROT_Y: 좌우
     """
     lx, ly, lz = local_v
 
-    # 앞뒤
     rot_x = np.degrees(np.arctan2(-ly, np.sqrt(lx * lx + lz * lz) + 1e-8))
-
-    # 좌우
     rot_y = np.degrees(np.arctan2(lx, abs(lz) + 1e-8))
 
-    # 비틀림은 아직 계산 안 함
-    rot_z = 0.0
+    return wrap_deg(rot_x), wrap_deg(rot_y)
 
-    return wrap_deg(rot_x), wrap_deg(rot_y), wrap_deg(rot_z)
+def compute_body_tilt(body_up, yaw_deg):
+    """
+    spine 방향(body_up)에서 pitch(앞뒤 기울기)와 roll(좌우 기울기) 추출.
+    yaw 성분을 먼저 제거하여 독립적으로 계산.
+    """
+    import math
+    yr = math.radians(yaw_deg)
+    cos_y, sin_y = math.cos(yr), math.sin(yr)
+    bux, buy, buz = float(body_up[0]), float(body_up[1]), float(body_up[2])
+
+    # Y축 기준 -yaw 회전 → yaw 성분 제거
+    dx =  cos_y * bux + sin_y * buz
+    dy =  buy
+    dz = -sin_y * bux + cos_y * buz
+
+    pitch = math.degrees(math.atan2(dz, dy))   # 앞뒤 기울기 (HumanML3D Z=forward)
+    roll  = math.degrees(math.atan2(-dx, dy))  # 좌우 기울기
+
+    return pitch, roll
+
+def compute_twist(arm_dir_local, end_vec_world, right, up, forward):
+    """
+    ROT_Z (팔/다리 자체 비틀림) 계산.
+
+    arm_dir_local : 상박/상퇴 방향 (body-local, 정규화됨)
+    end_vec_world : 전박/하퇴 벡터 (world space)
+    기준(ref):     body forward([0,0,1] in local) ⊥ arm_dir
+    실제(actual):  end_local ⊥ arm_dir
+
+    차렷 상태에서 전박이 forward 방향으로 굽힐 때 ROT_Z=0.
+    """
+    arm_n = normalize(arm_dir_local)
+
+    # end를 body-local로 변환 후 arm 축에 수직 투영
+    end_local = to_local(end_vec_world, right, up, forward)
+    actual_perp = end_local - np.dot(end_local, arm_n) * arm_n
+    actual_norm = np.linalg.norm(actual_perp)
+    if actual_norm < 1e-6:
+        return 0.0
+    actual_perp /= actual_norm
+
+    # 기준: body forward (local [0,0,1]) ⊥ arm_dir
+    ref = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+    ref = ref - np.dot(ref, arm_n) * arm_n
+    ref_norm = np.linalg.norm(ref)
+    if ref_norm < 1e-6:
+        # arm이 forward와 평행할 때 → body right를 기준으로
+        ref = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        ref = ref - np.dot(ref, arm_n) * arm_n
+        ref_norm = np.linalg.norm(ref)
+        if ref_norm < 1e-6:
+            return 0.0
+    ref /= ref_norm
+
+    cos_t = np.clip(np.dot(ref, actual_perp), -1.0, 1.0)
+    sin_t = np.dot(np.cross(ref, actual_perp), arm_n)
+    return float(np.degrees(np.arctan2(sin_t, cos_t)))
 
 def apply_part_adjustment(name, rot_x, rot_y, rot_z):
     rot_x = wrap_deg(
-        rot_x * PART_X_SIGN.get(name, 1.0) + PART_X_OFFSET.get(name, 0.0)
+        rot_x * PART_X_SIGN.get(name, 1.0) * PART_X_SCALE.get(name, 1.0)
+        + PART_X_OFFSET.get(name, 0.0)
     )
     rot_y = wrap_deg(
         rot_y * PART_Y_SIGN.get(name, 1.0) * PART_Y_SCALE.get(name, 1.0)
         + PART_Y_OFFSET.get(name, 0.0)
     )
-    rot_z = 0.0
+    rot_z = wrap_deg(rot_z * PART_Z_SIGN.get(name, 0.0) * PART_Z_SCALE.get(name, 1.0) + PART_Z_OFFSET.get(name, 0.0))
     return rot_x, rot_y, rot_z
 
 
@@ -212,8 +314,14 @@ def apply_part_adjustment(name, rot_x, rot_y, rot_z):
 def convert_motion_to_miframes(npy_path, output_path):
     motion = np.load(npy_path)
     x = torch.from_numpy(motion).float().unsqueeze(0)
+
     xyz_torch = recover_from_ric(x, 22)
     xyz = xyz_torch.squeeze(0).cpu().numpy()
+
+    # Global yaw: HumanML3D Y축 누적 회전각
+    r_rot_quat, _ = recover_root_rot_pos(x)
+    yaw_rad = torch.atan2(r_rot_quat[..., 2], r_rot_quat[..., 0])
+    yaw_deg = torch.rad2deg(yaw_rad).squeeze(0).cpu().numpy()  # (T,)
 
     T = xyz.shape[0]
     start_pos = xyz[0, ROOT].copy()
@@ -228,11 +336,11 @@ def convert_motion_to_miframes(npy_path, output_path):
     }
 
     parts = {
-        "head": {"p": HEAD, "parent": NECK},
-        "left_arm": {"p": L_ELBOW, "parent": L_SHOULDER, "end": L_WRIST},
+        "head":      {"p": HEAD,    "parent": NECK},
+        "left_arm":  {"p": L_ELBOW, "parent": L_SHOULDER, "end": L_WRIST},
         "right_arm": {"p": R_ELBOW, "parent": R_SHOULDER, "end": R_WRIST},
-        "left_leg": {"p": L_KNEE, "parent": L_HIP, "end": L_ANKLE},
-        "right_leg": {"p": R_KNEE, "parent": R_HIP, "end": R_ANKLE},
+        "left_leg":  {"p": L_KNEE,  "parent": L_HIP,      "end": L_ANKLE},
+        "right_leg": {"p": R_KNEE,  "parent": R_HIP,      "end": R_ANKLE},
     }
 
     angle_stats = {
@@ -250,27 +358,46 @@ def convert_motion_to_miframes(npy_path, output_path):
         # root
         pos_x, pos_y, pos_z = compute_root_position(curr_xyz[ROOT], start_pos)
 
+        global_yaw = wrap_deg(float(yaw_deg[t]) * YAW_SIGN * YAW_SCALE + YAW_OFFSET)
+
+        # 몸통 기준축 (pitch/roll 계산에도 필요)
+        body_right, body_up, body_forward = build_body_frame(curr_xyz)
+
+        pitch, roll = compute_body_tilt(body_up, float(yaw_deg[t]))
+        global_pitch = wrap_deg(pitch * PITCH_SIGN * PITCH_SCALE + PITCH_OFFSET + BODY_ROT_OFFSET["x"])
+        global_roll  = wrap_deg(roll  * ROLL_SIGN  * ROLL_SCALE  + ROLL_OFFSET  + BODY_ROT_OFFSET["z"])
+
+        root_rot_y = wrap_deg(global_yaw + BODY_ROT_OFFSET["y"])
+        root_rot_z = global_roll
+        if ROOT_ROT_SWAP_YZ:
+            root_rot_y, root_rot_z = root_rot_z, root_rot_y
+
         root_vals = {
             "POS_X": pos_x,
             "POS_Y": pos_y,
             "POS_Z": pos_z,
-            "ROT_X": round(wrap_deg(BODY_ROT_OFFSET["x"]), 5),
-            "ROT_Y": round(wrap_deg(BODY_ROT_OFFSET["y"]), 5),
-            "ROT_Z": round(wrap_deg(BODY_ROT_OFFSET["z"]), 5),
+            "ROT_X": round(global_pitch, 5),
+            "ROT_Y": round(root_rot_y, 5),
+            "ROT_Z": round(root_rot_z, 5),
         }
         miframes["keyframes"].append({
             "position": t,
             "values": root_vals
         })
 
-        # 몸통 기준축
-        body_right, body_up, body_forward = build_body_frame(curr_xyz)
-
         for name, idx in parts.items():
             v_world = curr_xyz[idx["p"]] - curr_xyz[idx["parent"]]
             v_local = to_local(v_world, body_right, body_up, body_forward)
 
-            rot_x, rot_y, rot_z = compute_rot_from_local(v_local)
+            rot_x, rot_y = compute_rot_from_local(v_local)
+
+            # ROT_Z: end가 있는 부위만 twist 계산
+            if "end" in idx and PART_Z_SIGN.get(name, 0.0) != 0.0:
+                end_vec = curr_xyz[idx["end"]] - curr_xyz[idx["p"]]
+                rot_z = compute_twist(v_local, end_vec, body_right, body_up, body_forward)
+            else:
+                rot_z = 0.0
+
             rot_x, rot_y, rot_z = apply_part_adjustment(name, rot_x, rot_y, rot_z)
 
             vals = {
@@ -298,7 +425,7 @@ def convert_motion_to_miframes(npy_path, output_path):
             })
 
     with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(miframes, f, indent="\t")
+        json.dump(miframes, f, indent="\t", default=to_jsonable)
 
     print(f"✅ 변환 완료: {output_path}")
     print("\n=== 관절 회전 각도 통계 (deg) ===")
@@ -311,15 +438,4 @@ def convert_motion_to_miframes(npy_path, output_path):
 
 
 if __name__ == "__main__":
-
     convert_motion_to_miframes(NPY_FILE, OUTPUT_FILE)
-    
-    # 이것만 실행
-    motion = np.load(NPY_FILE)
-    x = torch.from_numpy(motion).float().unsqueeze(0)
-    xyz = recover_from_ric(x, 22).squeeze(0).cpu().numpy()
-    
-    print("hip_center Y vs NECK Y (첫 5프레임):")
-    for t in range(5):
-        hip = 0.5 * (xyz[t, L_HIP] + xyz[t, R_HIP])
-        print(f"  frame {t}: hip_Y={hip[1]:.4f}, neck_Y={xyz[t, NECK][1]:.4f}, diff={xyz[t, NECK][1]-hip[1]:.4f}")
