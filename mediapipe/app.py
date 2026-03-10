@@ -5,6 +5,7 @@ import tempfile
 import cv2
 import gradio as gr
 import mediapipe as mp
+import numpy as np
 
 from convert import convert_to_imator
 
@@ -12,98 +13,147 @@ mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
 
 
-def process_motion_video(input_path: str) -> tuple[str, str]:
+def process_image(input_path: str):
+    """이미지 한 장에서 포즈 추출"""
     pose = mp_pose.Pose(
-        static_image_mode=False,
+        static_image_mode=True,
         model_complexity=2,
-        enable_segmentation=True,
+        enable_segmentation=False,
     )
 
-    cap = cv2.VideoCapture(input_path)
-    fps = int(cap.get(cv2.CAP_PROP_FPS))
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    image = cv2.imread(input_path)
+    if image is None:
+        raise ValueError(f"이미지를 읽을 수 없습니다: {input_path}")
 
-    tmp_dir = tempfile.mkdtemp()
-    output_video_path = os.path.join(tmp_dir, "output_skeleton.mp4")
-    output_data_path = os.path.join(tmp_dir, "motion_data.json")
-
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    out_video = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
-
-    motion_data = []
-    frame_count = 0
-
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = pose.process(frame_rgb)
-
-        frame_info = {"frame": frame_count, "landmarks": []}
-
-        if results.pose_landmarks:
-            for i, lm in enumerate(results.pose_landmarks.landmark):
-                frame_info["landmarks"].append(
-                    {
-                        "id": i,
-                        "x": lm.x,
-                        "y": lm.y,
-                        "z": lm.z,
-                        "visibility": lm.visibility,
-                    }
-                )
-
-            mp_drawing.draw_landmarks(
-                frame,
-                results.pose_landmarks,
-                mp_pose.POSE_CONNECTIONS,
-                mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=2, circle_radius=2),
-                mp_drawing.DrawingSpec(color=(0, 0, 255), thickness=2, circle_radius=1),
-            )
-
-        motion_data.append(frame_info)
-        out_video.write(frame)
-        frame_count += 1
-
-    cap.release()
-    out_video.release()
+    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    results = pose.process(image_rgb)
     pose.close()
 
-    with open(output_data_path, "w") as f:
-        json.dump(motion_data, f, indent=4)
+    frame_info = {"frame": 0, "landmarks": []}
 
-    imator_data = convert_to_imator(motion_data)
-    output_imator_path = output_data_path.replace("motion_data.json", "motion.miframes")
-    
+    if results.pose_landmarks:
+        for i, lm in enumerate(results.pose_landmarks.landmark):
+            frame_info["landmarks"].append({
+                "id": i,
+                "x": lm.x, "y": lm.y, "z": lm.z,
+                "visibility": lm.visibility,
+            })
+
+        mp_drawing.draw_landmarks(
+            image,
+            results.pose_landmarks,
+            mp_pose.POSE_CONNECTIONS,
+            mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=2, circle_radius=3),
+            mp_drawing.DrawingSpec(color=(0, 0, 255), thickness=2, circle_radius=2),
+        )
+
+    skeleton_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    return skeleton_rgb, [frame_info]
+
+
+def build_miframes(motion_data, calib):
+    tmp_dir = tempfile.mkdtemp()
+    output_imator_path = os.path.join(tmp_dir, "motion.miframes")
+
+    imator_data = convert_to_imator(motion_data, fps=30, calib=calib)
+
     with open(output_imator_path, "w") as f:
-        json.dump(imator_data, f, indent=4)
+        json.dump(imator_data, f, indent="\t")
 
-    return output_video_path, output_data_path, output_imator_path
+    return output_imator_path
 
 
-def run(video_file):
-    if video_file is None:
-        raise gr.Error("비디오 파일을 업로드해주세요.")
-    output_video, output_json, output_imator = process_motion_video(video_file)
-    return output_video, output_json, output_imator
+def collect_calib(
+    body_rx, body_ry, body_rz,
+    ra_xs, ra_xo, ra_ys, ra_ysc, ra_yo,
+    la_xs, la_xo, la_ys, la_ysc, la_yo,
+    rl_xs, rl_xo, rl_ys, rl_ysc, rl_yo,
+    ll_xs, ll_xo, ll_ys, ll_ysc, ll_yo,
+):
+    return {
+        "body_offset": {"x": body_rx, "y": body_ry, "z": body_rz},
+        "right_arm": {"x_sign": ra_xs, "x_offset": ra_xo, "y_sign": ra_ys, "y_scale": ra_ysc, "y_offset": ra_yo},
+        "left_arm":  {"x_sign": la_xs, "x_offset": la_xo, "y_sign": la_ys, "y_scale": la_ysc, "y_offset": la_yo},
+        "right_leg": {"x_sign": rl_xs, "x_offset": rl_xo, "y_sign": rl_ys, "y_scale": rl_ysc, "y_offset": rl_yo},
+        "left_leg":  {"x_sign": ll_xs, "x_offset": ll_xo, "y_sign": ll_ys, "y_scale": ll_ysc, "y_offset": ll_yo},
+    }
+
+
+def run_analyze(image_file, *calib_vals):
+    if image_file is None:
+        raise gr.Error("이미지를 업로드해주세요.")
+    skeleton_img, motion_data = process_image(image_file)
+    calib = collect_calib(*calib_vals)
+    output_imator = build_miframes(motion_data, calib)
+    return skeleton_img, output_imator, motion_data
+
+
+def run_convert(motion_data, *calib_vals):
+    if not motion_data:
+        raise gr.Error("먼저 이미지를 분석해주세요.")
+    calib = collect_calib(*calib_vals)
+    output_imator = build_miframes(motion_data, calib)
+    return output_imator
+
+
+def part_calib_ui(label, xs_default=1.0, xo_default=0.0, ys_default=1.0, ysc_default=1.0, yo_default=0.0):
+    gr.Markdown(f"**{label}**")
+    with gr.Row():
+        xs  = gr.Number(label="ROT_X sign",   value=xs_default,  minimum=-1, maximum=1, step=1)
+        xo  = gr.Number(label="ROT_X offset", value=xo_default,  minimum=-180, maximum=180)
+        ys  = gr.Number(label="ROT_Y sign",   value=ys_default,  minimum=-1, maximum=1, step=1)
+        ysc = gr.Number(label="ROT_Y scale",  value=ysc_default, minimum=0, maximum=5, step=0.01)
+        yo  = gr.Number(label="ROT_Y offset", value=yo_default,  minimum=-180, maximum=180)
+    return xs, xo, ys, ysc, yo
 
 
 with gr.Blocks(title="MediaPipe Pose Estimator") as demo:
     gr.Markdown("# MediaPipe Pose Estimator")
-    gr.Markdown("영상을 업로드하면 스켈레톤이 그려진 영상과 관절 좌표 JSON을 반환합니다.")
+    gr.Markdown("이미지를 업로드하면 스켈레톤 이미지와 Mine-imator 키프레임 파일을 반환합니다.")
+
+    motion_state = gr.State([])
 
     with gr.Row():
         with gr.Column():
-            video_input = gr.Video(label="입력 영상")
-            run_btn = gr.Button("분석 시작", variant="primary")
+            image_input = gr.Image(label="입력 이미지", type="filepath")
+            analyze_btn = gr.Button("분석 시작", variant="primary")
+            convert_btn = gr.Button("보정 재적용")
         with gr.Column():
-            video_output = gr.Video(label="스켈레톤 영상")
-            json_output = gr.File(label="관절 데이터 (JSON)")
+            image_output  = gr.Image(label="스켈레톤 이미지")
             imator_output = gr.File(label="Mine-imator 데이터 (MIFRAMES)")
-    run_btn.click(fn=run, inputs=video_input, outputs=[video_output, json_output, imator_output])
+
+    with gr.Accordion("보정 설정 (Calibration)", open=False):
+        gr.Markdown("### Body (전체 회전 오프셋)")
+        with gr.Row():
+            body_rx = gr.Number(label="ROT_X offset", value=0.0, minimum=-180, maximum=180)
+            body_ry = gr.Number(label="ROT_Y offset", value=0.0, minimum=-180, maximum=180)
+            body_rz = gr.Number(label="ROT_Z offset", value=0.0, minimum=-180, maximum=180)
+
+        gr.Markdown("### 팔/다리 보정")
+        gr.Markdown("> sign: +1 or -1 / scale: ROT_Y에만 적용 / offset: 최종 덧셈")
+        ra_xs, ra_xo, ra_ys, ra_ysc, ra_yo = part_calib_ui("Right Arm")
+        la_xs, la_xo, la_ys, la_ysc, la_yo = part_calib_ui("Left Arm")
+        rl_xs, rl_xo, rl_ys, rl_ysc, rl_yo = part_calib_ui("Right Leg")
+        ll_xs, ll_xo, ll_ys, ll_ysc, ll_yo = part_calib_ui("Left Leg")
+
+    calib_inputs = [
+        body_rx, body_ry, body_rz,
+        ra_xs, ra_xo, ra_ys, ra_ysc, ra_yo,
+        la_xs, la_xo, la_ys, la_ysc, la_yo,
+        rl_xs, rl_xo, rl_ys, rl_ysc, rl_yo,
+        ll_xs, ll_xo, ll_ys, ll_ysc, ll_yo,
+    ]
+
+    analyze_btn.click(
+        fn=run_analyze,
+        inputs=[image_input] + calib_inputs,
+        outputs=[image_output, imator_output, motion_state],
+    )
+    convert_btn.click(
+        fn=run_convert,
+        inputs=[motion_state] + calib_inputs,
+        outputs=[imator_output],
+    )
 
 if __name__ == "__main__":
     demo.launch(server_name="0.0.0.0", server_port=7860, share=True)
