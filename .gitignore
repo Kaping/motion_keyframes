@@ -7,3 +7,10 @@
 __pycache__/
 __pycache__/*
 *.pyc
+
+deps/*
+checkpoints/*
+outputs/*
+deps/
+checkpoints/
+outputs/

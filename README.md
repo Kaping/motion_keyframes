@@ -171,3 +171,33 @@ tqdm
 - ROT_Z (비틀림) 미계산, 항상 0.0
 - 전신 회전(global yaw)이 root ROT에 별도 반영되지 않음
 - PART_Y_SIGN 현재 미사용 (PART_Y_SCALE만 적용)
+
+## Docker 실행 가이드
+
+아래 명령은 프로젝트 루트(`motion_keyframes`)에서 실행합니다.
+
+### 1) 이미지 빌드 (공통)
+
+```powershell
+docker build -t motiongpt .
+```
+
+### 2) CPU 환경 실행
+
+```powershell
+docker run --rm -it -p 7860:7860 `
+  -v "${PWD}\checkpoints:/root/MotionGPT3/checkpoints" `
+  -v "${PWD}\deps:/root/MotionGPT3/deps" `
+  -v "${PWD}\outputs:/root/MotionGPT3/outputs" `
+  motiongpt
+```
+
+### 3) GPU 환경 실행 (NVIDIA + WSL2/Docker GPU 설정 완료 시)
+
+```powershell
+docker run --rm -it -p 7860:7860 --gpus all `
+  -v "${PWD}\checkpoints:/root/MotionGPT3/checkpoints" `
+  -v "${PWD}\deps:/root/MotionGPT3/deps" `
+  -v "${PWD}\outputs:/root/MotionGPT3/outputs" `
+  motiongpt
+```
