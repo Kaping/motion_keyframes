@@ -61,7 +61,6 @@ ENTRYPOINT ["/bin/bash", "-c", "\
         bash prepare/download_smpl_model.sh; \
     fi && \
     if [ ! -f deps/gpt2/model_state_dict.pth ]; then rm -rf deps/gpt2 deps/mot-gpt2 && bash prepare/prepare_gpt2.sh; else echo '[skip] deps/gpt2/model_state_dict.pth already exists'; fi && \
-    test -f deps/gpt2/config.json && test -f deps/gpt2/model_state_dict.pth && \
     bash prepare/download_mld_pretrained_models.sh && \
     rm -rf deps/mot-gpt2 && \
     python -m scripts.gen_mot_gpt && \
