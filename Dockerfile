@@ -43,9 +43,13 @@ RUN sed -i 's/server_name="localhost", server_port=8888/server_name="0.0.0.0", s
 # 재실행 시 이미 내려받은 폴더가 있으면 clone 단계는 스킵합니다.
 ENTRYPOINT ["/bin/bash", "-c", "\
     find prepare/ -name '*.sh' -exec perl -pi -e 's/\\r$//' {} + && \
-    bash prepare/download_t2m_evaluators.sh && \
-    mkdir -p deps/t2m/t2m && \
-    mv deps/t2m/t2m/t2m/* deps/t2m/t2m/ 2>/dev/null || true && \
+    if [ -d deps/t2m/t2m/kit ]; then \
+        echo '[skip] t2m evaluators already exist'; \
+    else \
+        bash prepare/download_t2m_evaluators.sh && \
+        mkdir -p deps/t2m/t2m && \
+        mv deps/t2m/t2m/t2m/* deps/t2m/t2m/ 2>/dev/null || true; \
+    fi && \
     if [ ! -d checkpoints/MotionGPT-base ]; then bash prepare/download_motiongpt_pretrained_models.sh; else echo '[skip] checkpoints/MotionGPT-base already exists'; fi && \
     mkdir -p checkpoints && \
     (ls checkpoints/motiongpt3.ckpt || gdown --id '1Wvx5PGJjVKPRvjcl8firChw1UVjUj36l' -O checkpoints/motiongpt3.ckpt) && \
