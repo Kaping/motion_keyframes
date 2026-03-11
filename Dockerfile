@@ -38,7 +38,8 @@ RUN pip install --no-cache-dir --upgrade cmake \
 RUN sed -i 's/server_name="localhost", server_port=8888/server_name="0.0.0.0", server_port=7860/g' app.py && \
     sed -i 's|whisper_path: deps/whisper-large-v2|whisper_path: openai/whisper-tiny|g' configs/assets.yaml && \
     sed -i 's|audio_model = WhisperForConditionalGeneration.from_pretrained(cfg.model.whisper_path).to(device)|audio_model = WhisperForConditionalGeneration.from_pretrained(cfg.model.whisper_path).to("cpu")|g' app.py && \
-    sed -i 's|model.to(device)|model.to("cpu")|g' app.py
+    sed -i 's|model.to(device)|model.to("cpu")|g' app.py && \
+    find motGPT -type f -name '*.py' -exec sed -i 's/\\.cuda()/\\.to("cpu")/g' {} +
 
 # 5. 실행 명령 (모델 다운로드 스크립트 실행 후 바로 앱 시작)
 # 재실행 시 이미 내려받은 폴더가 있으면 clone 단계는 스킵합니다.
@@ -56,6 +57,7 @@ ENTRYPOINT ["/bin/bash", "-c", "\
     bash prepare/download_mld_pretrained_models.sh && \
     rm -rf deps/mot-gpt2 && \
     python -m scripts.gen_mot_gpt && \
+    find motGPT -type f -name '*.py' -exec sed -i 's/\\.cuda()/\\.cpu()/g' {} + && \
     python -u app.py \
 "]
 
