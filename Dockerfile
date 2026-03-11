@@ -17,6 +17,7 @@ import torch
 import torchvision
 print("torch:", torch.__version__)
 print("torchvision:", torchvision.__version__)
+print("cuda available:", torch.cuda.is_available())
 PY
 
 WORKDIR /root
@@ -34,12 +35,9 @@ RUN pip install --no-cache-dir --upgrade cmake \
     && pip install --no-cache-dir librosa soundfile gdown "gradio==3.50.2" spacy \
     && python -m spacy download en_core_web_sm
 
-# 4. 코드 수정 (Gradio 서버 설정 및 Whisper 경로/디바이스 설정)
+# 4. 코드 수정 (Gradio 서버 설정 및 Whisper 경로만 수정; 디바이스는 원본 로직 유지)
 RUN sed -i 's/server_name="localhost", server_port=8888/server_name="0.0.0.0", server_port=7860/g' app.py && \
-    sed -i 's|whisper_path: deps/whisper-large-v2|whisper_path: openai/whisper-tiny|g' configs/assets.yaml && \
-    sed -i 's|audio_model = WhisperForConditionalGeneration.from_pretrained(cfg.model.whisper_path).to(device)|audio_model = WhisperForConditionalGeneration.from_pretrained(cfg.model.whisper_path).to("cpu")|g' app.py && \
-    sed -i 's|model.to(device)|model.to("cpu")|g' app.py && \
-    find motGPT -type f -name '*.py' -exec sed -i 's/\\.cuda()/\\.to("cpu")/g' {} +
+    sed -i 's|whisper_path: deps/whisper-large-v2|whisper_path: openai/whisper-tiny|g' configs/assets.yaml
 
 # 5. 실행 명령 (모델 다운로드 스크립트 실행 후 바로 앱 시작)
 # 재실행 시 이미 내려받은 폴더가 있으면 clone 단계는 스킵합니다.
@@ -51,13 +49,22 @@ ENTRYPOINT ["/bin/bash", "-c", "\
     if [ ! -d checkpoints/MotionGPT-base ]; then bash prepare/download_motiongpt_pretrained_models.sh; else echo '[skip] checkpoints/MotionGPT-base already exists'; fi && \
     mkdir -p checkpoints && \
     (ls checkpoints/motiongpt3.ckpt || gdown --id '1Wvx5PGJjVKPRvjcl8firChw1UVjUj36l' -O checkpoints/motiongpt3.ckpt) && \
-    bash prepare/download_smpl_model.sh && \
+    if [ -d deps/smpl_models/smplh ] || [ -d smpl_models/smplh ]; then \
+        echo '[skip] SMPL model already exists'; \
+    elif [ -f deps/smpl.tar.gz ]; then \
+        echo '[local] found deps/smpl.tar.gz, extracting to deps/...'; \
+        mkdir -p deps && tar -xzf deps/smpl.tar.gz -C deps; \
+    elif [ -f smpl.tar.gz ]; then \
+        echo '[local] found smpl.tar.gz, extracting to deps/...'; \
+        mkdir -p deps && tar -xzf smpl.tar.gz -C deps; \
+    else \
+        bash prepare/download_smpl_model.sh; \
+    fi && \
     if [ ! -f deps/gpt2/model_state_dict.pth ]; then rm -rf deps/gpt2 deps/mot-gpt2 && bash prepare/prepare_gpt2.sh; else echo '[skip] deps/gpt2/model_state_dict.pth already exists'; fi && \
     test -f deps/gpt2/config.json && test -f deps/gpt2/model_state_dict.pth && \
     bash prepare/download_mld_pretrained_models.sh && \
     rm -rf deps/mot-gpt2 && \
     python -m scripts.gen_mot_gpt && \
-    find motGPT -type f -name '*.py' -exec sed -i 's/\\.cuda()/\\.cpu()/g' {} + && \
     python -u app.py \
 "]
 
