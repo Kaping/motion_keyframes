@@ -32,7 +32,6 @@ ROOT_USE_RELATIVE = True
 ROOT_LOCK_XZ = False
 ROOT_SWAP_XZ = False
 ROOT_ROT_SWAP_YZ = True
-GLOBAL_POS_FOCUS = "root"  # "root" | "foot_center"
 
 BODY_ROT_OFFSET = {
     "x": 0.0,
@@ -47,9 +46,9 @@ ROOT_POS_SIGN = {
 }
 
 ROOT_POS_SCALE = {
-    "x": 12.0,
-    "y": 12.0,
-    "z": 12.0,
+    "x": 16.0,
+    "y": 16.0,
+    "z": 16.0,
 }
 
 ROOT_POS_OFFSET = {
@@ -60,14 +59,14 @@ ROOT_POS_OFFSET = {
 
 # --- Global Body 회전 보정 ---
 # Yaw: HumanML3D Y축 누적 회전 → Mine-imator root ROT_Y
-YAW_SIGN = -1.0
-YAW_SCALE = 2.0
+YAW_SIGN = 1.0
+YAW_SCALE = 1.0
 YAW_OFFSET = 0.0
 
 # Pitch: spine 앞뒤 기울기 → Mine-imator root ROT_X
-PITCH_SIGN = 1.0
+PITCH_SIGN = -1.0
 PITCH_SCALE = 1.0
-PITCH_OFFSET = -8.0
+PITCH_OFFSET = -4.0
 
 # Roll: spine 좌우 기울기 → Mine-imator root ROT_Z
 ROLL_SIGN = 1.0
@@ -109,8 +108,8 @@ PART_Y_SIGN = {
 
 PART_Y_SCALE = {
     "head": 0.2,
-    "left_arm": 0.5,
-    "right_arm": 0.5,
+    "left_arm": 0.1,
+    "right_arm": 0.1,
     "left_leg": 0.2,
     "right_leg": 0.2,
 }
@@ -126,7 +125,7 @@ PART_Y_OFFSET = {
 # ROT_Z (비틀림) 보정
 PART_Z_SIGN = {
     "head": 0.0,        # head는 end 없음 → twist 계산 안 함
-    "left_arm": -1.0,
+    "left_arm": 1.0,
     "right_arm": -1.0,
     "left_leg": 1.0,
     "right_leg": 1.0,
@@ -163,6 +162,14 @@ def wrap_deg(angle):
 def unwrap_from_prev(curr_wrapped, prev_unwrapped):
     delta = wrap_deg(curr_wrapped - prev_unwrapped)
     return prev_unwrapped + delta
+
+def summarize_series(name, values):
+    arr = np.asarray(values, dtype=np.float32)
+    if arr.size < 2:
+        return
+    total_rot = float(arr[-1] - arr[0])
+    max_jump = float(np.max(np.abs(np.diff(arr))))
+    print(f"- {name}: total_rotation={total_rot:.5f}, max_frame_jump={max_jump:.5f}")
 
 def to_jsonable(obj):
     """NumPy 스칼라/배열을 표준 JSON 직렬화 가능한 타입으로 변환."""
@@ -204,9 +211,7 @@ def to_local(v_world, right, up, forward):
         np.dot(v_world, forward),
     ], dtype=np.float32)
 
-def get_global_focus_position(curr_xyz):
-    if GLOBAL_POS_FOCUS == "foot_center":
-        return 0.5 * (curr_xyz[L_ANKLE] + curr_xyz[R_ANKLE])
+def get_root_position(curr_xyz):
     return curr_xyz[ROOT]
 
 def compute_root_position(curr_focus, start_focus):
@@ -255,25 +260,43 @@ def compute_rot_from_local(local_v):
 
     return wrap_deg(rot_x), wrap_deg(rot_y)
 
-def compute_body_tilt(body_up, yaw_deg):
+def compute_body_euler_from_frame(right, up, forward):
     """
-    spine 방향(body_up)에서 pitch(앞뒤 기울기)와 roll(좌우 기울기) 추출.
-    yaw 성분을 먼저 제거하여 독립적으로 계산.
+    body frame(right/up/forward)에서 직접 yaw/pitch/roll을 계산한다.
+    - yaw  : forward의 수평면(XZ) 투영 방향
+    - pitch: yaw를 제거한 forward의 수직 성분 기반
+    - roll : yaw를 제거한 right/up의 수직 성분 관계 기반
+    quaternion/Euler 분해를 사용하지 않는다.
     """
-    import math
-    yr = math.radians(yaw_deg)
-    cos_y, sin_y = math.cos(yr), math.sin(yr)
-    bux, buy, buz = float(body_up[0]), float(body_up[1]), float(body_up[2])
+    right = normalize(right)
+    up = normalize(up)
+    forward = normalize(forward)
 
-    # Y축 기준 -yaw 회전 → yaw 성분 제거
-    dx =  cos_y * bux + sin_y * buz
-    dy =  buy
-    dz = -sin_y * bux + cos_y * buz
+    # yaw: forward의 XZ 투영으로 계산
+    yaw = float(np.degrees(np.arctan2(forward[0], forward[2] + 1e-8)))
 
-    pitch = math.degrees(math.atan2(dz, dy))   # 앞뒤 기울기 (HumanML3D Z=forward)
-    roll  = math.degrees(math.atan2(-dx, dy))  # 좌우 기울기
+    # yaw를 제거한 body frame으로 pitch/roll 계산
+    yaw_rad = np.radians(-yaw)
+    cy, sy = np.cos(yaw_rad), np.sin(yaw_rad)
+    rot_y = np.array(
+        [
+            [cy, 0.0, sy],
+            [0.0, 1.0, 0.0],
+            [-sy, 0.0, cy],
+        ],
+        dtype=np.float32,
+    )
+    right_local = rot_y @ right
+    up_local = rot_y @ up
+    forward_local = rot_y @ forward
 
-    return pitch, roll
+    # pitch: forward의 수직(y) 성분과 전방(z) 성분으로 계산
+    pitch = float(np.degrees(np.arctan2(-forward_local[1], forward_local[2] + 1e-8)))
+
+    # roll: right/up의 수직 성분 관계(주로 right의 y, x)로 계산
+    roll = float(np.degrees(np.arctan2(-right_local[1], right_local[0] + 1e-8)))
+
+    return pitch, yaw, roll
 
 def compute_twist(arm_dir_local, end_vec_world, right, up, forward):
     """
@@ -314,11 +337,11 @@ def compute_twist(arm_dir_local, end_vec_world, right, up, forward):
     return float(np.degrees(np.arctan2(sin_t, cos_t)))
 
 def apply_part_adjustment(name, rot_x, rot_y, rot_z):
-    rot_x = wrap_deg(
+    rot_x = (
         rot_x * PART_X_SIGN.get(name, 1.0) * PART_X_SCALE.get(name, 1.0)
         + PART_X_OFFSET.get(name, 0.0)
     )
-    rot_y = wrap_deg(
+    rot_y = (
         rot_y * PART_Y_SIGN.get(name, 1.0) * PART_Y_SCALE.get(name, 1.0)
         + PART_Y_OFFSET.get(name, 0.0)
     )
@@ -328,7 +351,13 @@ def apply_part_adjustment(name, rot_x, rot_y, rot_z):
 
 
 # --- [3. 메인] ---
-def convert_motion_to_miframes(npy_path, output_path):
+def convert_motion_to_miframes(
+    npy_path,
+    output_path,
+    return_root_rot_series=False,
+    root_rot_calib=None,
+    frame_stride=1,
+):
     motion = np.load(npy_path)
     x = torch.from_numpy(motion).float().unsqueeze(0)
 
@@ -339,9 +368,11 @@ def convert_motion_to_miframes(npy_path, output_path):
     r_rot_quat, _ = recover_root_rot_pos(x)
     yaw_rad = torch.atan2(r_rot_quat[..., 2], r_rot_quat[..., 0])
     yaw_deg = torch.rad2deg(yaw_rad).squeeze(0).cpu().numpy()  # (T,)
-
+    print("yaw_deg min: ", min(yaw_deg), "max: ", max(yaw_deg))
     T = xyz.shape[0]
-    start_pos = get_global_focus_position(xyz[0]).copy()
+    frame_stride = max(1, int(frame_stride))
+    frame_indices = list(range(0, T, frame_stride))
+    start_pos = get_root_position(xyz[0]).copy()
 
     miframes = {
         "format": 34,
@@ -368,39 +399,153 @@ def convert_motion_to_miframes(npy_path, output_path):
         }
         for name in parts.keys()
     }
+    global_rot_stats = {
+        "ROT_X": {"min": np.inf, "max": -np.inf},
+        "ROT_Y": {"min": np.inf, "max": -np.inf},
+        "ROT_Z": {"min": np.inf, "max": -np.inf},
+    }
+    root_rot_series = {
+        "pitch": [],
+        "roll": [],
+        "yaw": [],
+    }
+    yaw_raw_series = []
+    yaw_unwrapped_series = []
+    yaw_calibrated_series = []
+    body_yaw_unwrapped_series = []
+    root_xz_path = 0.0
+    yaw_prev_unwrapped = 0.0
+    yaw_has_prev = False
+    pitch_prev_unwrapped = 0.0
+    pitch_has_prev = False
+    roll_prev_unwrapped = 0.0
+    roll_has_prev = False
+    body_yaw_prev_unwrapped = 0.0
+    body_yaw_has_prev = False
+    yaw_ref_unwrapped = None
+    prev_root_focus = None
     twist_prev_unwrapped = {name: 0.0 for name in TWIST_STABILIZE_PARTS}
     twist_prev_output = {name: 0.0 for name in TWIST_STABILIZE_PARTS}
     twist_has_prev = {name: False for name in TWIST_STABILIZE_PARTS}
+    part_prev_unwrapped = {
+        name: {"ROT_X": 0.0, "ROT_Y": 0.0, "ROT_Z": 0.0}
+        for name in parts.keys()
+    }
+    part_has_prev = {name: False for name in parts.keys()}
 
-    for t in range(T):
+    root_rot_cfg = {
+        "x": {"sign": PITCH_SIGN, "offset": PITCH_OFFSET, "scale": PITCH_SCALE},
+        "y": {"sign": ROLL_SIGN, "offset": ROLL_OFFSET, "scale": ROLL_SCALE},
+        "z": {"sign": YAW_SIGN, "offset": YAW_OFFSET, "scale": YAW_SCALE},
+    }
+    if isinstance(root_rot_calib, dict):
+        for axis in ("x", "y", "z"):
+            axis_cfg = root_rot_calib.get(axis, {})
+            if not isinstance(axis_cfg, dict):
+                continue
+            if "sign" in axis_cfg:
+                root_rot_cfg[axis]["sign"] = float(axis_cfg["sign"])
+            if "offset" in axis_cfg:
+                root_rot_cfg[axis]["offset"] = float(axis_cfg["offset"])
+
+    for t in frame_indices:
         curr_xyz = xyz[t]
 
         # root
-        curr_focus = get_global_focus_position(curr_xyz)
+        curr_focus = get_root_position(curr_xyz)
         pos_x, pos_y, pos_z = compute_root_position(curr_focus, start_pos)
-
-        global_yaw = wrap_deg(float(yaw_deg[t]) * YAW_SIGN * YAW_SCALE + YAW_OFFSET)
+        if prev_root_focus is not None:
+            root_xz_path += float(np.linalg.norm(curr_focus[[0, 2]] - prev_root_focus[[0, 2]]))
+        prev_root_focus = curr_focus
 
         # 몸통 기준축 (pitch/roll 계산에도 필요)
         body_right, body_up, body_forward = build_body_frame(curr_xyz)
 
-        pitch, roll = compute_body_tilt(body_up, float(yaw_deg[t]))
-        global_pitch = wrap_deg(pitch * PITCH_SIGN * PITCH_SCALE + PITCH_OFFSET + BODY_ROT_OFFSET["x"])
-        global_roll  = wrap_deg(roll  * ROLL_SIGN  * ROLL_SCALE  + ROLL_OFFSET  + BODY_ROT_OFFSET["z"])
+        raw_yaw = float(yaw_deg[t])
+        yaw_raw_series.append(raw_yaw)
+        if yaw_has_prev:
+            yaw_unwrapped = unwrap_from_prev(raw_yaw, yaw_prev_unwrapped)
+        else:
+            yaw_unwrapped = raw_yaw
+            yaw_has_prev = True
+        yaw_prev_unwrapped = yaw_unwrapped
+        yaw_unwrapped_series.append(yaw_unwrapped)
 
-        root_rot_y = wrap_deg(global_yaw + BODY_ROT_OFFSET["y"])
-        root_rot_z = global_roll
-        if ROOT_ROT_SWAP_YZ:
-            root_rot_y, root_rot_z = root_rot_z, root_rot_y
+        # root orientation은 body frame 전체에서 추출한 Euler를 사용한다.
+        body_pitch_raw, body_yaw_raw, body_roll_raw = compute_body_euler_from_frame(
+            body_right, body_up, body_forward
+        )
+
+        if body_yaw_has_prev:
+            body_yaw_unwrapped = unwrap_from_prev(body_yaw_raw, body_yaw_prev_unwrapped)
+        else:
+            body_yaw_unwrapped = body_yaw_raw
+            body_yaw_has_prev = True
+        body_yaw_prev_unwrapped = body_yaw_unwrapped
+        body_yaw_unwrapped_series.append(body_yaw_unwrapped)
+
+        if pitch_has_prev:
+            pitch_unwrapped = unwrap_from_prev(body_pitch_raw, pitch_prev_unwrapped)
+        else:
+            pitch_unwrapped = body_pitch_raw
+            pitch_has_prev = True
+        pitch_prev_unwrapped = pitch_unwrapped
+
+        if roll_has_prev:
+            roll_unwrapped = unwrap_from_prev(body_roll_raw, roll_prev_unwrapped)
+        else:
+            roll_unwrapped = body_roll_raw
+            roll_has_prev = True
+        roll_prev_unwrapped = roll_unwrapped
+
+        # yaw(ROT_Z)는 시작 프레임을 기준으로 정렬한다.
+        # 고정 오프셋 대신 첫 프레임의 unwrapped yaw를 기준값으로 빼서
+        # 모션별 절대 시작각 차이는 제거하고 누적 회전 변화는 유지한다.
+        if yaw_ref_unwrapped is None:
+            yaw_ref_unwrapped = body_yaw_unwrapped
+        relative_body_yaw = body_yaw_unwrapped - yaw_ref_unwrapped
+        calibrated_yaw = (
+            relative_body_yaw * root_rot_cfg["z"]["sign"] * root_rot_cfg["z"]["scale"]
+        )
+        yaw_calibrated_series.append(calibrated_yaw)
+        global_yaw = calibrated_yaw
+
+        global_pitch = (
+            pitch_unwrapped * root_rot_cfg["x"]["sign"] * root_rot_cfg["x"]["scale"]
+            + root_rot_cfg["x"]["offset"]
+            + BODY_ROT_OFFSET["x"]
+        )
+        global_roll = (
+            roll_unwrapped * root_rot_cfg["y"]["sign"] * root_rot_cfg["y"]["scale"]
+            + root_rot_cfg["y"]["offset"]
+            + BODY_ROT_OFFSET["z"]
+        )
+
+        # root 축 매핑 고정:
+        # - 앞뒤(pitch) -> ROT_X
+        # - 좌우(roll)  -> ROT_Y
+        # - yaw         -> ROT_Z
+        root_rot_x = global_pitch
+        root_rot_y = global_roll
+        root_rot_z = global_yaw + BODY_ROT_OFFSET["y"]
 
         root_vals = {
             "POS_X": pos_x,
             "POS_Y": pos_y,
             "POS_Z": pos_z,
-            "ROT_X": round(global_pitch, 5),
+            "ROT_X": round(root_rot_x, 5),
             "ROT_Y": round(root_rot_y, 5),
             "ROT_Z": round(root_rot_z, 5),
         }
+        root_rot_series["pitch"].append(root_vals["ROT_X"])
+        root_rot_series["roll"].append(root_vals["ROT_Y"])
+        root_rot_series["yaw"].append(root_vals["ROT_Z"])
+        global_rot_stats["ROT_X"]["min"] = min(global_rot_stats["ROT_X"]["min"], root_vals["ROT_X"])
+        global_rot_stats["ROT_X"]["max"] = max(global_rot_stats["ROT_X"]["max"], root_vals["ROT_X"])
+        global_rot_stats["ROT_Y"]["min"] = min(global_rot_stats["ROT_Y"]["min"], root_vals["ROT_Y"])
+        global_rot_stats["ROT_Y"]["max"] = max(global_rot_stats["ROT_Y"]["max"], root_vals["ROT_Y"])
+        global_rot_stats["ROT_Z"]["min"] = min(global_rot_stats["ROT_Z"]["min"], root_vals["ROT_Z"])
+        global_rot_stats["ROT_Z"]["max"] = max(global_rot_stats["ROT_Z"]["max"], root_vals["ROT_Z"])
         miframes["keyframes"].append({
             "position": t,
             "values": root_vals
@@ -438,6 +583,18 @@ def convert_motion_to_miframes(npy_path, output_path):
                 rot_z = 0.0
 
             rot_x, rot_y, rot_z = apply_part_adjustment(name, rot_x, rot_y, rot_z)
+
+            # 관절 각도도 연속각으로 유지해 ±180 경계 점프로 인한 한 바퀴 회전을 방지한다.
+            if part_has_prev[name]:
+                rot_x = unwrap_from_prev(rot_x, part_prev_unwrapped[name]["ROT_X"])
+                rot_y = unwrap_from_prev(rot_y, part_prev_unwrapped[name]["ROT_Y"])
+                rot_z = unwrap_from_prev(rot_z, part_prev_unwrapped[name]["ROT_Z"])
+            else:
+                part_has_prev[name] = True
+            part_prev_unwrapped[name]["ROT_X"] = float(rot_x)
+            part_prev_unwrapped[name]["ROT_Y"] = float(rot_y)
+            part_prev_unwrapped[name]["ROT_Z"] = float(rot_z)
+
             if name == "head":
                 # 헤드 Y축은 리그 반응이 불안정해 0으로 고정한다.
                 rot_y = 0.0
@@ -470,6 +627,12 @@ def convert_motion_to_miframes(npy_path, output_path):
         json.dump(miframes, f, indent="\t", default=to_jsonable)
 
     print(f"✅ 변환 완료: {output_path}")
+    print("\n=== Global Root 회전 각도 통계 (deg) ===")
+    for axis in ["ROT_X", "ROT_Y", "ROT_Z"]:
+        amin = global_rot_stats[axis]["min"]
+        amax = global_rot_stats[axis]["max"]
+        print(f"- {axis}: min={amin:.5f}, max={amax:.5f}")
+
     print("\n=== 관절 회전 각도 통계 (deg) ===")
     for name, axes in angle_stats.items():
         print(f"- {name}")
@@ -477,6 +640,15 @@ def convert_motion_to_miframes(npy_path, output_path):
             amin = axes[axis]["min"]
             amax = axes[axis]["max"]
             print(f"  {axis}: min={amin:.5f}, max={amax:.5f}")
+
+    print("\n=== Root Yaw 검증 지표 ===")
+    summarize_series("quat_yaw_unwrapped", yaw_unwrapped_series)
+    summarize_series("quat_yaw_calibrated", yaw_calibrated_series)
+    summarize_series("body_forward_yaw_unwrapped", body_yaw_unwrapped_series)
+    print(f"- root_xz_path(HumanML3D): {root_xz_path:.5f}")
+
+    if return_root_rot_series:
+        return root_rot_series
 
 
 if __name__ == "__main__":
