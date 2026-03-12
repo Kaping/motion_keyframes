@@ -46,9 +46,9 @@ ROOT_POS_SIGN = {
 }
 
 ROOT_POS_SCALE = {
-    "x": 16.0,
-    "y": 16.0,
-    "z": 16.0,
+    "x": 13.0,
+    "y": 13.0,
+    "z": 14.0,
 }
 
 ROOT_POS_OFFSET = {
@@ -107,11 +107,11 @@ PART_Y_SIGN = {
 }
 
 PART_Y_SCALE = {
-    "head": 0.2,
-    "left_arm": 0.1,
-    "right_arm": 0.1,
-    "left_leg": 0.2,
-    "right_leg": 0.2,
+    "head": 0.4,
+    "left_arm": 0.4,
+    "right_arm": 0.4,
+    "left_leg": 0.7,
+    "right_leg": 0.7,
 }
 
 PART_Y_OFFSET = {
@@ -126,7 +126,7 @@ PART_Y_OFFSET = {
 PART_Z_SIGN = {
     "head": 0.0,        # head는 end 없음 → twist 계산 안 함
     "left_arm": 1.0,
-    "right_arm": -1.0,
+    "right_arm": 1.0,
     "left_leg": 1.0,
     "right_leg": 1.0,
 }
@@ -355,6 +355,7 @@ def convert_motion_to_miframes(
     npy_path,
     output_path,
     return_root_rot_series=False,
+    return_part_rot_series=False,
     root_rot_calib=None,
     frame_stride=1,
 ):
@@ -408,6 +409,12 @@ def convert_motion_to_miframes(
         "pitch": [],
         "roll": [],
         "yaw": [],
+    }
+    part_rot_series = {
+        "left_arm": {"ROT_X": [], "ROT_Y": [], "ROT_Z": []},
+        "right_arm": {"ROT_X": [], "ROT_Y": [], "ROT_Z": []},
+        "left_leg": {"ROT_X": [], "ROT_Y": [], "ROT_Z": []},
+        "right_leg": {"ROT_X": [], "ROT_Y": [], "ROT_Z": []},
     }
     yaw_raw_series = []
     yaw_unwrapped_series = []
@@ -605,6 +612,11 @@ def convert_motion_to_miframes(
                 "ROT_Z": round(rot_z, 5),
             }
 
+            if name in part_rot_series:
+                part_rot_series[name]["ROT_X"].append(vals["ROT_X"])
+                part_rot_series[name]["ROT_Y"].append(vals["ROT_Y"])
+                part_rot_series[name]["ROT_Z"].append(vals["ROT_Z"])
+
             if "end" in idx:
                 v1 = curr_xyz[idx["parent"]] - curr_xyz[idx["p"]]
                 v2 = curr_xyz[idx["end"]] - curr_xyz[idx["p"]]
@@ -647,8 +659,12 @@ def convert_motion_to_miframes(
     summarize_series("body_forward_yaw_unwrapped", body_yaw_unwrapped_series)
     print(f"- root_xz_path(HumanML3D): {root_xz_path:.5f}")
 
+    if return_root_rot_series and return_part_rot_series:
+        return root_rot_series, part_rot_series
     if return_root_rot_series:
         return root_rot_series
+    if return_part_rot_series:
+        return part_rot_series
 
 
 if __name__ == "__main__":

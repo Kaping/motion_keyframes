@@ -83,6 +83,30 @@ def build_root_rot_plot(root_rot_series):
     return fig
 
 
+def build_limb_rot_plot(part_rot_series):
+    fig, axes = plt.subplots(2, 2, figsize=(12, 6), sharex=True)
+    limb_specs = [
+        ("left_arm", "Left Arm"),
+        ("right_arm", "Right Arm"),
+        ("left_leg", "Left Leg"),
+        ("right_leg", "Right Leg"),
+    ]
+    for ax, (limb_key, title) in zip(axes.flatten(), limb_specs):
+        limb = part_rot_series.get(limb_key, {"ROT_X": [], "ROT_Y": [], "ROT_Z": []})
+        frames = list(range(len(limb["ROT_X"])))
+        ax.plot(frames, limb["ROT_X"], label="ROT_X", linewidth=1.2)
+        ax.plot(frames, limb["ROT_Y"], label="ROT_Y", linewidth=1.2)
+        ax.plot(frames, limb["ROT_Z"], label="ROT_Z", linewidth=1.2)
+        ax.set_title(title)
+        ax.set_ylabel("Degrees")
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=8)
+    axes[1, 0].set_xlabel("Frame")
+    axes[1, 1].set_xlabel("Frame")
+    fig.tight_layout()
+    return fig
+
+
 def reset_root_rot_defaults():
     return (PITCH_SIGN, PITCH_OFFSET, ROLL_SIGN, ROLL_OFFSET, YAW_SIGN, 1)
 
@@ -116,14 +140,21 @@ def generate(text, rot_x_sign, rot_x_offset, rot_y_sign, rot_y_offset, rot_z_sig
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     miframes_path = os.path.join(tmp_dir, f"{base_name}_{timestamp}.miframes")
 
-    root_rot_series = convert_motion_to_miframes(
+    root_rot_series, part_rot_series = convert_motion_to_miframes(
         output_npy_path, miframes_path,
         return_root_rot_series=True,
+        return_part_rot_series=True,
         root_rot_calib=root_rot_calib,
         frame_stride=int(frame_stride),
     )
 
-    return output_mp4_path, output_npy_path, miframes_path, build_root_rot_plot(root_rot_series)
+    return (
+        output_mp4_path,
+        output_npy_path,
+        miframes_path,
+        build_root_rot_plot(root_rot_series),
+        build_limb_rot_plot(part_rot_series),
+    )
 
 
 def pick_random_description():
@@ -160,7 +191,18 @@ Describe a human movement in natural language. The model generates a 3D skeleton
 
 
 # --- UI ---
-with gr.Blocks(title="MotionGPT3 → Mine-imator") as demo:
+with gr.Blocks(
+    title="MotionGPT3 → Mine-imator",
+    css="""
+    #generated_motion video {
+        width: 78% !important;
+        height: auto !important;
+        object-fit: contain !important;
+        display: block;
+        margin: 0 auto;
+    }
+    """,
+) as demo:
     gr.Markdown("# MotionGPT3 → Mine-imator")
     gr.Markdown("Generate human motion from text and export directly to Mine-imator keyframes.")
 
@@ -186,8 +228,9 @@ with gr.Blocks(title="MotionGPT3 → Mine-imator") as demo:
 
         # Col 2: Video
         with gr.Column(scale=3):
-            out_video = gr.Video(label="Generated Motion", autoplay=True)
+            out_video = gr.Video(label="Generated Motion", autoplay=True, elem_id="generated_motion")
             root_rot_plot = gr.Plot(label="Root Rotation Graph")
+            limb_rot_plot = gr.Plot(label="Limb Rotation Graph (Arms/Legs)")
 
         # Col 3: Downloads
         with gr.Column(scale=1):
@@ -209,7 +252,7 @@ with gr.Blocks(title="MotionGPT3 → Mine-imator") as demo:
     # --- Event Bindings ---
     _calib_inputs = [rot_x_sign, rot_x_offset, rot_y_sign, rot_y_offset, rot_z_sign]
     _gen_inputs   = [txt, *_calib_inputs, frame_stride]
-    _gen_outputs  = [out_video, out_npy, out_miframes, root_rot_plot]
+    _gen_outputs  = [out_video, out_npy, out_miframes, root_rot_plot, limb_rot_plot]
 
     generate_btn.click(fn=generate, inputs=_gen_inputs, outputs=_gen_outputs)
     txt.submit(fn=generate, inputs=_gen_inputs, outputs=_gen_outputs)
