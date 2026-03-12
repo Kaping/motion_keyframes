@@ -46,9 +46,9 @@ ROOT_POS_SIGN = {
 }
 
 ROOT_POS_SCALE = {
-    "x": 13.0,
-    "y": 13.0,
-    "z": 14.0,
+    "x": 15.0,
+    "y": 15.0,
+    "z": 15.0,
 }
 
 ROOT_POS_OFFSET = {
