@@ -25,22 +25,26 @@ RUN git lfs install && git clone https://github.com/OpenMotionLab/MotionGPT3.git
 
 WORKDIR /root/MotionGPT3
 
-# 3. Python 의존성 설치 및 환경 설정
 RUN pip install --no-cache-dir --upgrade cmake \
     && pip install --no-cache-dir pyarrow --only-binary=:all: \
     && sed -i '/bpy/d' requirements.txt \
     && pip install --no-cache-dir -r requirements.txt \
     && pip install --no-cache-dir -r prepare/requirements_render.txt \
     && pip install --no-cache-dir --force-reinstall torch==2.0.0+cu118 torchvision==0.15.1+cu118 --index-url https://download.pytorch.org/whl/cu118 \
-    && pip install --no-cache-dir librosa soundfile gdown "gradio==3.50.2" spacy \
+    && pip install --no-cache-dir gdown "gradio==3.50.2" spacy matplotlib safetensors \
     && python -m spacy download en_core_web_sm
 
-# 4. 코드 수정 (Gradio 서버 설정 및 Whisper 경로만 수정; 디바이스는 원본 로직 유지)
-RUN sed -i 's/server_name="localhost", server_port=8888/server_name="0.0.0.0", server_port=7860/g' app.py && \
-    sed -i 's|whisper_path: deps/whisper-large-v2|whisper_path: openai/whisper-tiny|g' configs/assets.yaml
+# 로컬 커스텀 파일로 repo의 app.py를 대체
+COPY app.py            /root/MotionGPT3/app.py
+COPY test.py           /root/MotionGPT3/test.py
+COPY motion_process.py /root/MotionGPT3/motion_process.py
+COPY skeleton.py       /root/MotionGPT3/skeleton.py
+COPY quaternion.py     /root/MotionGPT3/quaternion.py
+COPY paramUtil.py      /root/MotionGPT3/paramUtil.py
 
-# 5. 실행 명령 (모델 다운로드 스크립트 실행 후 바로 앱 시작)
-# 재실행 시 이미 내려받은 폴더가 있으면 clone 단계는 스킵합니다.
+# motGPT 내부 .cuda() → .to("cpu") 패치
+RUN find motGPT -type f -name '*.py' -exec sed -i 's/\.cuda()/\.to("cpu")/g' {} +
+
 ENTRYPOINT ["/bin/bash", "-c", "\
     find prepare/ -name '*.sh' -exec perl -pi -e 's/\\r$//' {} + && \
     if [ -d deps/t2m/t2m/kit ]; then \
@@ -53,21 +57,24 @@ ENTRYPOINT ["/bin/bash", "-c", "\
     if [ ! -d checkpoints/MotionGPT-base ]; then bash prepare/download_motiongpt_pretrained_models.sh; else echo '[skip] checkpoints/MotionGPT-base already exists'; fi && \
     mkdir -p checkpoints && \
     (ls checkpoints/motiongpt3.ckpt || gdown --id '1Wvx5PGJjVKPRvjcl8firChw1UVjUj36l' -O checkpoints/motiongpt3.ckpt) && \
-    if [ -d deps/smpl_models/smplh ] || [ -d smpl_models/smplh ]; then \
+    if [ -d deps/smpl_models ] && [ \"$(ls -A deps/smpl_models 2>/dev/null)\" ]; then \
         echo '[skip] SMPL model already exists'; \
-    elif [ -f deps/smpl.tar.gz ]; then \
-        echo '[local] found deps/smpl.tar.gz, extracting to deps/...'; \
-        mkdir -p deps && tar -xzf deps/smpl.tar.gz -C deps; \
-    elif [ -f smpl.tar.gz ]; then \
-        echo '[local] found smpl.tar.gz, extracting to deps/...'; \
-        mkdir -p deps && tar -xzf smpl.tar.gz -C deps; \
     else \
         bash prepare/download_smpl_model.sh; \
     fi && \
-    if [ ! -f deps/gpt2/model_state_dict.pth ]; then rm -rf deps/gpt2 deps/mot-gpt2 && bash prepare/prepare_gpt2.sh; else echo '[skip] deps/gpt2/model_state_dict.pth already exists'; fi && \
+    if [ -d deps/gpt2/.git ]; then \
+        echo '[local] gpt2 repo found, running LFS checkout...'; \
+        cd deps/gpt2 && git lfs install --local && git lfs fetch --all && git lfs checkout && cd ../..; \
+    else \
+        rm -rf deps/gpt2 deps/mot-gpt2 && bash prepare/prepare_gpt2.sh; \
+    fi && \
     bash prepare/download_mld_pretrained_models.sh && \
-    rm -rf deps/mot-gpt2 && \
-    python -m scripts.gen_mot_gpt && \
+    if [ -f deps/mot-gpt2/model_state_dict.pth ]; then \
+        echo '[skip] deps/mot-gpt2/model_state_dict.pth already exists'; \
+    else \
+        rm -rf deps/mot-gpt2 && python -m scripts.gen_mot_gpt; \
+    fi && \
+    find motGPT -type f -name '*.py' -exec sed -i 's/\\.cuda()/\\.cpu()/g' {} + && \
     python -u app.py \
 "]
 
