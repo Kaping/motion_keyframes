@@ -110,8 +110,8 @@ PART_Y_SCALE = {
     "head": 0.4,
     "left_arm": 0.4,
     "right_arm": 0.4,
-    "left_leg": 0.7,
-    "right_leg": 0.7,
+    "left_leg": 0.3,
+    "right_leg": 0.3,
 }
 
 PART_Y_OFFSET = {
