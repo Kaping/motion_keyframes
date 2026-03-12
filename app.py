@@ -132,6 +132,11 @@ def pick_random_description():
 
 # --- Examples ---
 T2M_EXAMPLES = [
+    ["A person leaps high into the air and lands in a stable squatting position."],
+    ["A person performs a side cartwheel."],
+    ["A person performs a forward roll on the ground and stands up."],
+    ["A person is climbing up a flight of stairs."],
+    ["A person is sprinting and hurdles over an obstacle without breaking their stride, then continues running."],
     ["A person is crouched down and walking around sneakily."],
     ["A person sits on the ledge of something then gets off and walks away."],
     ["A person is practicing balancing on one leg."],
@@ -139,7 +144,7 @@ T2M_EXAMPLES = [
     ["A woman throws out her right arm, then brings both hands to her mouth."],
     ["A person walks in a curved line."],
     ["The person jumps over something and lands on their feet."],
-    ["The person appears to stumble backwards."],
+    ["A person is kneeling with both knees on the ground."]
 ]
 
 INSTRUCTIONS_MD = """
